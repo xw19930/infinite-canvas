@@ -9,3 +9,4 @@ services:
     # environment:
     #   ANALYTICS_GA4_ID: G-XXXXXXXXXX                    # Google Analytics 4 衡量 ID
     #   ANALYTICS_BAIDU_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 百度统计站点 ID
+    #   MEDIA_UPLOAD_URL: https://your-worker.workers.dev    # Cloudflare R2 媒体 Worker 地址

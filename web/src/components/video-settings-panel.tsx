@@ -6,6 +6,7 @@ import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions } from "@/lib/media-size";
+import { normalizeVideoCount } from "@/lib/video-generation";
 import { type AiConfig } from "@/stores/use-config-store";
 
 const resolutionOptions = [
@@ -24,7 +25,7 @@ export const videoSecondsRange = { min: VIDEO_SECONDS_MIN, max: VIDEO_SECONDS_MA
 
 type VideoSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoMode", value: string) => void;
+    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoMode" | "videoCount", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
@@ -33,6 +34,7 @@ type VideoSettingsPanelProps = {
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
     const seconds = Number(clampVideoSeconds(config.videoSeconds || "6"));
+    const videoCount = normalizeVideoCount(config.videoCount);
     const videoMode = normalizeVideoModeValue(config.videoMode);
     const resolution = parseVideoResolution(config.vquality);
     const selectedRatio = inferVideoRatio(config.size || "auto");
@@ -100,6 +102,16 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </SettingGroup>
+                <SettingGroup title={t("settingsPanels.video.count")} color={theme.node.muted}>
+                    <div className="grid grid-cols-5 gap-2.5">
+                        {Array.from({ length: 10 }, (_, index) => index + 1).map((value) => (
+                            <OptionPill key={value} selected={videoCount === value} theme={theme} onClick={() => onConfigChange("videoCount", String(value))}>
+                                {t("settingsPanels.video.videos", { count: value })}
+                            </OptionPill>
+                        ))}
+                        <CountInput value={videoCount} theme={theme} onChange={(value) => onConfigChange("videoCount", String(value))} />
+                    </div>
+                </SettingGroup>
             </div>
         </ImageSettingsTheme>
     );
@@ -159,6 +171,20 @@ function SettingGroup({ title, color, children }: { title: string; color: string
             </div>
             {children}
         </div>
+    );
+}
+
+function CountInput({ value, theme, onChange }: { value: number; theme: CanvasTheme; onChange: (value: number) => void }) {
+    const commit = (input: HTMLInputElement) => {
+        const next = normalizeVideoCount(input.value);
+        input.value = String(next);
+        onChange(next);
+    };
+
+    return (
+        <label className="flex h-9 overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
+            <input type="number" min={1} max={10} className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" defaultValue={value} key={value} onBlur={(event) => commit(event.currentTarget)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} onMouseDown={(event) => event.stopPropagation()} />
+        </label>
     );
 }
 

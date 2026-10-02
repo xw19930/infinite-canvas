@@ -222,8 +222,8 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
     return url;
 }
 
-export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }, options?: ImageReadOptions) {
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
+export async function imageToDataUrl(image: { url?: string; dataUrl?: string; publicUrl?: string; storageKey?: string }, options?: ImageReadOptions) {
+    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.publicUrl || image.url || ""));
     if (!url || url.startsWith("data:")) return url;
     return blobToDataUrl(await fetchImageBlob(url, options));
 }

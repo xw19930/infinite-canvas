@@ -3,9 +3,13 @@ import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
 import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
+import { VIDEO_POLL_INTERVAL_MS, VIDEO_TASK_TIMEOUT_MS } from "@/lib/video-generation";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
+import { buildDolaVideoRequestBody, buildPublicUrlVideoRequestBody, isDolaVideoModel, publicReferenceImageUrls } from "@/lib/video-request";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
+import { MEDIA_UPLOAD_URL } from "@/constant/runtime-config";
+import { uploadImageToWorker } from "@/services/public-media";
 import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
@@ -48,15 +52,16 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
 }
 
 export async function waitForVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationResult> {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    const deadline = Date.now() + VIDEO_TASK_TIMEOUT_MS;
+    for (;;) {
         if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const state = await pollVideoGenerationTask(config, task, options);
         if (state.status === "completed") return state.result;
         if (state.status === "failed") throw videoTaskFailed(state.error);
-        if (attempt === 119) throw new Error(apiText("videoTimeout", { provider: "" }));
-        await delay(2500, options?.signal);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(apiText("videoTimeout", { provider: "" }));
+        await delay(Math.min(VIDEO_POLL_INTERVAL_MS, remaining), options?.signal);
     }
-    throw new Error(apiText("videoTimeout", { provider: "" }));
 }
 
 export function isVideoTaskFailed(error: unknown) {
@@ -72,11 +77,16 @@ function videoTaskFailed(message: string) {
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
     const selectedModel = (config.model || config.videoModel).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
+    // Dola's URL-only contract must win even if an older imported channel still has a custom script.
+    if (isDolaVideoModel(selectedModel)) {
+        assertVideoConfig(requestConfig, requestConfig.model);
+        return createPublicUrlVideoTask(requestConfig, selectedModel, prompt, references, options);
+    }
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
     if (requestConfig.apiFormat === "gemini") return createGeminiVideoTask(requestConfig, selectedModel, prompt, references, options);
-    return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
+    return createPublicUrlVideoTask(requestConfig, selectedModel, prompt, references, options);
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
@@ -93,7 +103,7 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
 async function createPluginVideoTask(config: AiConfig, model: string, script: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
     if (!config.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
     if (!config.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
-    const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+    const refs = config.apiFormat === "gemini" ? await Promise.all(references.map((image) => imageToDataUrl(image))) : await resolvePublicReferenceImageUrls(references, options);
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
     const result = videoPluginResult(
@@ -146,30 +156,36 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     throw new Error(apiText("noPlayableVideo"));
 }
 
-async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
-    const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
-    const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
-    const mode = resolveVideoMode(config.videoMode, images.length);
-    const body = new FormData();
-    body.append("model", modelOptionName(model));
-    body.append("prompt", prompt);
-    body.append("seconds", normalizeVideoSeconds(config.videoSeconds));
-    body.append("size", normalizeVideoSize(config.size, config.vquality) || "1280x720");
-    body.append("resolution_name", normalizeVideoResolution(config.vquality));
-    body.append("generate_audio", String(boolConfig(config.videoGenerateAudio, true)));
-    body.append("watermark", String(boolConfig(config.videoWatermark, false)));
-    body.append("mode", mode);
-    if (mode === "frames") {
-        if (images[0]) body.append("first_frame", images[0], "first.png");
-        if (images[1]) body.append("last_frame", images[1], "last.png");
-    } else {
-        images.forEach((file) => body.append("image[]", file, "ref.png"));
-    }
-    videos.forEach((file) => body.append("video[]", file));
-    audios.forEach((file) => body.append("audio[]", file));
+async function createPublicUrlVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const imageUrls = await resolvePublicReferenceImageUrls(references, options);
+    const size = normalizeVideoSize(config.size, config.vquality) || "1280x720";
+    const resolution = normalizeVideoResolution(config.vquality);
+    // Dola's Seedance endpoint requires `duration`, `resolution`, and explicit
+    // @图N prompt references for the corresponding public image URLs. Sending
+    // only the generic OpenAI fields makes the task fall back to text-to-video.
+    const body = isDolaVideoModel(model)
+        ? buildDolaVideoRequestBody({
+            model: modelOptionName(model),
+            prompt,
+            duration: normalizeVideoSeconds(config.videoSeconds),
+            size,
+            resolution,
+            imageUrls,
+        })
+        : buildPublicUrlVideoRequestBody({
+            model: modelOptionName(model),
+            prompt,
+            seconds: normalizeVideoSeconds(config.videoSeconds),
+            size,
+            resolution,
+            aspectRatio: videoAspectRatio(config.size),
+            generateAudio: boolConfig(config.videoGenerateAudio, true),
+            watermark: boolConfig(config.videoWatermark, false),
+            mode: resolveVideoMode(config.videoMode, imageUrls.length),
+            imageUrls,
+        });
     try {
-        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config), signal: options?.signal })).data);
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
         if (!created.id) throw new Error(apiText("noVideoTaskId"));
         return { id: created.id, provider: "openai", model };
     } catch (error) {
@@ -287,6 +303,23 @@ function parseDataUrlInline(dataUrl: string, fallbackType = "image/png"): Gemini
 
 async function fileToGeminiInline(file: File): Promise<GeminiInlineData> {
     return parseDataUrlInline(await readFileAsDataUrl(file), file.type || "application/octet-stream");
+}
+
+async function resolvePublicReferenceImageUrls(references: ReferenceImage[], options?: RequestOptions) {
+    const directUrls = publicReferenceImageUrls(references);
+    if (directUrls) return directUrls;
+    if (!MEDIA_UPLOAD_URL) throw new Error(apiText("publicReferenceImageRequired"));
+    return Promise.all(
+        references.map(async (image, index) => {
+            const directUrl = image.publicUrl || image.url || "";
+            if (/^https?:\/\//i.test(directUrl)) return directUrl;
+            const dataUrl = await imageToDataUrl(image, options);
+            if (!dataUrl?.startsWith("data:")) throw new Error(apiText("publicReferenceImageRequired"));
+            const file = dataUrlToFile({ ...image, dataUrl });
+            const uploaded = await uploadImageToWorker(file, image.name || `reference-${index}.png`, MEDIA_UPLOAD_URL);
+            return uploaded.publicUrl;
+        }),
+    );
 }
 
 async function referenceMediaToFile(item: { name: string; type?: string; url?: string; storageKey?: string }, fallbackName: string, errorKey: "invalidReferenceVideo" | "invalidReferenceAudio", options?: RequestOptions) {

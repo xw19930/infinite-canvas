@@ -1,6 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
 import i18n from "@/i18n";
+import { VIDEO_TASK_TIMEOUT_MS } from "@/lib/video-generation";
 import { buildApiUrl, withLocalProxy, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 type RequestOptions = { signal?: AbortSignal };
@@ -91,10 +92,10 @@ function sleep(ms: number, signal?: AbortSignal) {
     });
 }
 
-function createPoll(signal?: AbortSignal) {
+function createPoll(signal?: AbortSignal, defaultTimeoutMs = 300000) {
     return async function poll<T, R>(request: () => Promise<T>, extract: (value: T) => R | null | undefined | false, options?: PluginPollOptions): Promise<R> {
         const intervalMs = options?.intervalMs ?? 2500;
-        const timeoutMs = options?.timeoutMs ?? 300000;
+        const timeoutMs = Math.max(options?.timeoutMs ?? defaultTimeoutMs, defaultTimeoutMs);
         const deadline = performance.now() + timeoutMs;
         for (;;) {
             if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -114,7 +115,7 @@ export async function runModelPlugin<T = unknown>(args: RunPluginArgs): Promise<
     const { config } = args;
     const http = createPluginHttp(config, { signal: args.signal });
     const request = createPluginRequest(config, { signal: args.signal });
-    const poll = createPoll(args.signal);
+    const poll = createPoll(args.signal, args.capability === "video" ? VIDEO_TASK_TIMEOUT_MS : undefined);
     const runner = new Function(
         "prompt",
         "images",
@@ -438,10 +439,10 @@ return await generateImage({
         {
             label: i18n.t("modelPlugin.templates.openai"),
             script: `/**
- * OpenAI-compatible video: POST /v1/videos (multipart), then poll GET /v1/videos/{id}.
- * Do not set Content-Type on FormData; the browser adds the boundary.
+ * OpenAI-compatible video: POST /v1/videos with public image URLs, then poll GET /v1/videos/{id}.
+ * Reference images are sent in the JSON images array and are never downloaded into multipart files.
  * @param {string} prompt
- * @param {string[]} images - reference images as data URLs
+ * @param {string[]} images - reference images as public URLs
  * @param {File[]} videos - reference videos; empty when none
  * @param {File[]} audios - reference audio; empty when none
  * @param {object} params
@@ -468,6 +469,7 @@ async function generateVideo({
     seconds,
     size,
     resolution,
+    ratio,
     generateAudio,
     watermark,
   },
@@ -477,42 +479,28 @@ async function generateVideo({
   request,
   poll,
 }) {
-  const form = new FormData();
-  form.set("model", model);
-  form.set("prompt", prompt);
-  form.set("seconds", String(seconds || 8));
-  form.set("size", String(size || "1280x720"));
-  form.set("resolution_name", String(resolution || "720p"));
-  form.set("generate_audio", String(generateAudio !== false));
-  form.set("watermark", String(watermark === true));
-  form.set("mode", mode);
-  if (mode === "frames") {
-    if (images[0]) {
-      form.append("first_frame", await (await fetch(images[0])).blob(), "first.png");
-    }
-    if (images[1]) {
-      form.append("last_frame", await (await fetch(images[1])).blob(), "last.png");
-    }
-  } else {
-    for (const dataUrl of images) {
-      form.append("image[]", await (await fetch(dataUrl)).blob(), "ref.png");
-    }
-  }
-  for (const file of videos) {
-    form.append("video[]", file);
-  }
-  for (const file of audios) {
-    form.append("audio[]", file);
-  }
-
+  const body = {
+    model,
+    prompt,
+    seconds: String(seconds || 8),
+    size: String(size || "1280x720"),
+    resolution: String(resolution || "720p"),
+    resolution_name: String(resolution || "720p"),
+    generate_audio: generateAudio !== false,
+    watermark: watermark === true,
+    mode,
+    aspect_ratio: String(ratio || "16:9"),
+    images,
+  };
   const headers = {
     Authorization: \`Bearer \${apiKey}\`,
+    "Content-Type": "application/json",
   };
   const task = await request({
     method: "post",
     url: \`\${baseUrl}/v1/videos\`,
     headers,
-    data: form,
+    data: body,
   });
 
   return await poll(
@@ -539,7 +527,7 @@ async function generateVideo({
       return null;
     },
     (result) => result,
-    { intervalMs: 2500, timeoutMs: 300000 },
+    { intervalMs: 2500, timeoutMs: 7200000 },
   );
 }
 
@@ -699,7 +687,7 @@ async function generateVideo({
       const separator = uri.includes("?") ? "&" : "?";
       return { url: uri + separator + "key=" + apiKey };
     },
-    { intervalMs: 5000, timeoutMs: 300000 },
+    { intervalMs: 5000, timeoutMs: 7200000 },
   );
 }
 

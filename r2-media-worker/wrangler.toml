@@ -1,0 +1,10 @@
+name = "infinite-canvas-r2-media"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[vars]
+PUBLIC_BASE_URL = ""
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "infinite-canvas-media"

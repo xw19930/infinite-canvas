@@ -146,6 +146,8 @@ docker compose up -d
 
 如果默认的OpenAI接口调用方式与您的API不同，可自定义生图/视频脚本调用。
 
+如果需要让视频参考图变成公网直链，先按 `r2-media-worker/README.md` 部署 Cloudflare R2 Worker，再为 Docker 设置 `MEDIA_UPLOAD_URL`。R2 凭据只放在 Worker，不要放进前端环境变量。
+
 ## 效果展示
 
 <table width="100%">

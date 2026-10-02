@@ -29,6 +29,25 @@ docker build -t infinite-canvas .
 docker run --rm -p 3000:3000 infinite-canvas
 ```
 
+## Configure Cloudflare R2 public reference images
+
+Video Studio accepts public image URLs directly. To turn local uploads and clipboard images into public URLs, deploy `r2-media-worker/` first:
+
+```bash
+cd r2-media-worker
+bun install
+npx wrangler r2 bucket create infinite-canvas-media
+npx wrangler deploy
+```
+
+Pass the deployed Worker URL to the frontend container:
+
+```bash
+MEDIA_UPLOAD_URL=https://your-worker.workers.dev docker compose up -d
+```
+
+Keep R2 Access Keys and Secrets in the Worker binding only. Without the Worker, local references and direct public URLs still work, but local images are not uploaded to public storage.
+
 ## First-time setup
 
 - Open Settings and enter your `Base URL`, `API Key`, and model names.

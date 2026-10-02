@@ -7,3 +7,5 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+    # environment:
+    #   MEDIA_UPLOAD_URL: https://your-worker.workers.dev

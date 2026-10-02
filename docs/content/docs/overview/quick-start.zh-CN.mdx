@@ -36,6 +36,25 @@ docker build -t infinite-canvas .
 docker run --rm -p 3000:3000 infinite-canvas
 ```
 
+## 配置 Cloudflare R2 公网参考图
+
+视频创作台可以直接粘贴公网图片 URL。若希望本地上传和剪切板图片自动生成公网直链，先部署 `r2-media-worker/`：
+
+```bash
+cd r2-media-worker
+bun install
+npx wrangler r2 bucket create infinite-canvas-media
+npx wrangler deploy
+```
+
+把部署后的 Worker 地址传给前端容器：
+
+```bash
+MEDIA_UPLOAD_URL=https://your-worker.workers.dev docker compose up -d
+```
+
+R2 Access Key 和 Secret 只保存在 Worker 绑定中，不要放进 `VITE_MEDIA_UPLOAD_URL` 或浏览器配置。未配置 Worker 时，视频工作台仍可使用本地参考图和公网 URL 输入，但不会自动上传本地图片。
+
 ## 首次使用建议
 
 - 先打开右上角配置弹窗，填入自己的 `Base URL`、`API Key` 和模型名。
