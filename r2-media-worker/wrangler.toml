@@ -1,6 +1,12 @@
 name = "infinite-canvas-r2-media"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
+workers_dev = false
+
+routes = [
+  { pattern = "wxhb.070798.xyz/upload*", zone_name = "070798.xyz" },
+  { pattern = "wxhb.070798.xyz/media/*", zone_name = "070798.xyz" },
+]
 
 [vars]
 PUBLIC_BASE_URL = ""

@@ -73,3 +73,6 @@ function corsHeaders(extra: Record<string, string> = {}) {
 function json(value: unknown, status = 200) {
     return new Response(JSON.stringify(value), { status, headers: corsHeaders({ "Content-Type": "application/json; charset=utf-8" }) });
 }
+
+export default { fetch };
+
